@@ -1,0 +1,429 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Steel Cut List</title>
+<link rel="icon" href="icon.png">
+<style>
+  :root { --fg:#1d2329; --muted:#66707a; --line:#dde1e5; --bg:#fff; --soft:#f4f6f8; --accent:#1a73e8; --warn:#b3261e; }
+  * { box-sizing: border-box; }
+  body { margin:0; padding:12px; font:13px/1.4 system-ui, -apple-system, "Segoe UI", sans-serif; color:var(--fg); background:var(--bg); }
+  header { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+  h1 { font-size:15px; margin:0; }
+  h2 { font-size:13px; margin:16px 0 6px; }
+  label { display:block; font-size:12px; color:var(--muted); margin:8px 0 3px; }
+  label.check { display:flex; gap:6px; align-items:center; color:var(--fg); }
+  select, input { width:100%; padding:6px; border:1px solid var(--line); border-radius:4px; font:inherit; }
+  input[type=checkbox] { width:auto; }
+  .row { display:flex; gap:8px; } .row > div { flex:1; }
+  .pick { display:flex; gap:6px; } .pick select { flex:1; min-width:0; }
+  .pick button { flex:none; margin:0; padding:0 10px; font-size:15px; }
+  button { margin-top:10px; padding:7px 12px; border:0; border-radius:4px; background:var(--accent); color:#fff; font:inherit; cursor:pointer; }
+  button.secondary { background:var(--soft); color:var(--fg); border:1px solid var(--line); }
+  button.link { margin:0; padding:2px 4px; background:none; color:var(--accent); }
+  button:disabled { opacity:.5; cursor:default; }
+  table { width:100%; border-collapse:collapse; margin-top:4px; }
+  th, td { text-align:left; padding:3px 4px; border-bottom:1px solid var(--line); vertical-align:middle; }
+  th { font-weight:600; color:var(--muted); font-size:12px; }
+  th.n, td.n { text-align:right; white-space:nowrap; width:1%; padding-left:12px; font-variant-numeric:tabular-nums; }
+  th.c, td.c { width:1%; }
+  td input { padding:4px; }
+  .size { background:var(--soft); padding:6px 8px; border-radius:4px; margin-top:10px; display:flex; gap:6px; align-items:center; flex-wrap:wrap; }
+  .size .stock { margin-left:auto; display:flex; gap:4px; align-items:center; font-size:12px; color:var(--muted); }
+  .size .stock input { width:80px; padding:3px 5px; }
+  .buy { font-size:14px; font-weight:600; margin:4px 0; }
+  .muted { color:var(--muted); } .err { color:var(--warn); } .note { font-size:12px; }
+  details { margin-top:6px; } summary { cursor:pointer; color:var(--muted); }
+</style>
+</head>
+<body>
+<header>
+  <h1 id="title">Steel Cut List</h1>
+  <button class="link" id="toggleView">Stock settings</button>
+</header>
+
+<!-- ============================================================ cut list -->
+<div id="mainView">
+  <div id="docPick" hidden>
+    <label for="url">Onshape document link</label>
+    <input id="url" placeholder="https://cad.onshape.com/documents/…">
+  </div>
+
+  <label for="asm">Assembly</label>
+  <div class="pick">
+    <select id="asm"><option>Loading…</option></select>
+    <button class="secondary" id="reloadAsm" title="Reload the assembly list">↻</button>
+  </div>
+  <button id="load">Load steel parts</button>
+  <div id="status" class="muted"></div>
+
+  <div id="parts"></div>
+
+  <div id="settings" hidden>
+    <h2>Cutting</h2>
+    <div class="row">
+      <div><label for="kerf">Kerf (in)</label><input id="kerf"></div>
+      <div><label for="round">Round cut lengths up to</label>
+        <select id="round">
+          <option value="0" selected>no rounding</option>
+          <option value="16">nearest 1/16"</option>
+          <option value="8">nearest 1/8"</option>
+        </select>
+      </div>
+    </div>
+    <label class="check"><input type="checkbox" id="remember"> Save the stock lengths I changed above as the setting for those sizes</label>
+    <button id="calc">Calculate stock to buy</button>
+  </div>
+
+  <div id="results"></div>
+</div>
+
+<!-- ============================================================ stock settings -->
+<div id="stockView" hidden>
+  <p class="muted note">Stock lengths you buy for each size. Sizes without their own setting use the default. Everyone using this app shares these settings.</p>
+  <div class="row">
+    <div><label for="defFt">Default stock lengths (ft)</label><input id="defFt" placeholder="20, 24"></div>
+    <div><label for="defKerf">Kerf (in)</label><input id="defKerf" placeholder="0.125"></div>
+  </div>
+
+  <h2>Stock lengths by size</h2>
+  <table id="sizeTable"></table>
+
+  <h2>Add a size</h2>
+  <div class="row">
+    <div style="flex:2"><label for="newSize">Size (as shown in the cut list)</label><input id="newSize" list="knownSizes" placeholder="Rect tube 4 x 6 x 5/16"></div>
+    <div><label for="newFt">Stock (ft)</label><input id="newFt" placeholder="20, 24"></div>
+  </div>
+  <datalist id="knownSizes"></datalist>
+  <button class="secondary" id="addSize">Add</button>
+
+  <div><button id="saveStock">Save settings</button> <button class="secondary" id="backMain">Back</button></div>
+  <div id="stockStatus" class="muted"></div>
+</div>
+
+<script>
+/** The Apps Script deployment (steel-cutlist/Code.gs doPost). */
+var API_URL = 'https://script.google.com/macros/s/AKfycbxIpPqyN7rwzzE3TJI3WpFO2G8GiD6vzl5hghC2QbZi385bGzkAdi6Npm4ui_yBIKgV/exec';
+
+/** Onshape fills these into the extension's Action URL; the key comes from showSetup(). */
+var BOOT = (function () {
+  var p = new URLSearchParams(location.search);
+  var id = function (s) { return /^[0-9a-f]{24}$/.test(s || '') ? s : ''; };
+  var config = p.get('configuration') || '';
+  return {
+    key: p.get('key') || '',
+    documentId: id(p.get('documentId')),
+    wvm: /^[wvm]$/.test(p.get('workspaceOrVersion') || '') ? p.get('workspaceOrVersion') : 'w',
+    wvmId: id(p.get('workspaceOrVersionId')),
+    elementId: id(p.get('elementId')),
+    configuration: /\{\$/.test(config) ? '' : config // Onshape may leave the placeholder unfilled
+  };
+})();
+var $ = function (id) { return document.getElementById(id); };
+var state = { ref: null, data: null, results: null, stock: { defaultFt: '20, 24', kerf: '0.125', sizes: {} }, edit: null };
+
+function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
+function fmtIn(x) { return (+x.toFixed(3)) + '"'; }
+function fmtFtIn(inches) {
+  if (inches < 12) return fmtIn(inches);
+  var ft = Math.floor(inches / 12), r = inches - ft * 12;
+  return ft + "' " + (+r.toFixed(3)) + '"';
+}
+function roundUp(x, step) { step = +step; return step ? Math.ceil(x * step - 1e-6) / step : +x.toFixed(4); }
+function parseFt(s) { return String(s).split(',').map(function (x) { return parseFloat(x); }).filter(function (x) { return x > 0; }); }
+function sameFt(a, b) { return parseFt(a).sort().join() === parseFt(b).sort().join(); }
+function stockFor(label) { return state.stock.sizes[label] || state.stock.defaultFt; }
+
+/**
+ * Call an API function. Sent as text/plain with no cookies: a plain POST needs
+ * no CORS preflight, and leaving out Google cookies is what keeps multiple
+ * signed-in Google accounts from breaking it.
+ */
+function call(fn) {
+  var args = Array.prototype.slice.call(arguments, 1);
+  return fetch(API_URL, {
+    method: 'POST',
+    credentials: 'omit',
+    headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+    body: JSON.stringify({ fn: fn, args: args })
+  }).then(function (res) {
+    if (!res.ok) throw new Error('The app server returned ' + res.status + '.');
+    return res.json();
+  }, function () {
+    throw new Error('Couldn\'t reach the app server. Check your connection and try again.');
+  }).then(function (out) {
+    if (out.error) throw new Error(out.error);
+    return out.result;
+  });
+}
+function setStatus(msg, isErr, el) { el = el || $('status'); el.className = isErr ? 'err' : 'muted'; el.textContent = msg || ''; }
+
+function parseUrl(u) {
+  var m = /documents\/([0-9a-f]{24})\/([wvm])\/([0-9a-f]{24})(?:\/e\/([0-9a-f]{24}))?/.exec(u || '');
+  return m ? { documentId: m[1], wvm: m[2], wvmId: m[3], elementId: m[4] || '' } : null;
+}
+
+// ------------------------------------------------------------ cut list
+
+/** Fill the assembly picker; selects `pick` if given, else the assembly Onshape opened us in. */
+function loadAssemblies(doc, pick) {
+  state.ref = doc;
+  $('asm').innerHTML = '<option>Loading…</option>';
+  $('reloadAsm').disabled = true;
+  return call('listAssemblies', BOOT.key, doc.documentId, doc.wvm, doc.wvmId).then(function (list) {
+    var sel = pick || doc.elementId;
+    $('asm').innerHTML = list.map(function (a) {
+      return '<option value="' + a.id + '"' + (a.id === sel ? ' selected' : '') + '>' + esc(a.name) + '</option>';
+    }).join('') || '<option value="">No assemblies in this document</option>';
+  }).catch(function (e) { setStatus(e.message, true); })
+    .then(function () { $('reloadAsm').disabled = false; });
+}
+
+function reloadAssemblies() {
+  if (!state.ref) return setStatus('Paste a document link first.', true);
+  var current = $('asm').value;
+  setStatus('');
+  loadAssemblies(state.ref, current).then(function () {
+    if ($('asm').value !== current) $('asm').onchange(); // the selected assembly is gone; clear its parts
+  });
+}
+
+function loadParts() {
+  var ref = Object.assign({}, state.ref, { elementId: $('asm').value });
+  if (ref.elementId !== state.ref.elementId) ref.configuration = '';
+  if (!ref.elementId) return;
+  $('load').disabled = true; $('results').innerHTML = ''; $('parts').innerHTML = '';
+  setStatus('Reading BOM and measuring parts…');
+  call('getCutList', BOOT.key, ref).then(function (data) {
+    data.pieces.forEach(function (p, i) { p.id = i; p.include = true; });
+    state.data = data; renderParts(); setStatus('');
+  }).catch(function (e) { setStatus(e.message, true); })
+    .then(function () { $('load').disabled = false; });
+}
+
+/** Size groups of measured pieces; includedOnly drops unticked parts and empty groups. */
+function sizeGroups(includedOnly) {
+  var groups = {};
+  state.data.pieces.forEach(function (p) {
+    if (includedOnly && !p.include) return;
+    (groups[p.sizeKey] = groups[p.sizeKey] || { sizeKey: p.sizeKey, sizeLabel: p.sizeLabel, pieces: [] }).pieces.push(p);
+  });
+  return Object.keys(groups).map(function (k) {
+    groups[k].pieces.sort(function (a, b) { return b.length - a.length; });
+    return groups[k];
+  }).sort(function (a, b) { return a.sizeLabel.localeCompare(b.sizeLabel, undefined, { numeric: true }); });
+}
+
+function renderParts() {
+  var d = state.data, html = '';
+  if (!d.pieces.length) html = '<p class="muted">No tube, pipe, bar or angle parts found in this assembly.</p>';
+  sizeGroups(false).forEach(function (g) {
+    var count = g.pieces.reduce(function (s, p) { return s + p.qty; }, 0);
+    var own = !!state.stock.sizes[g.sizeLabel];
+    var anyOn = g.pieces.some(function (p) { return p.include; });
+    html += '<div class="size"><input type="checkbox"' + (anyOn ? ' checked' : '') + ' data-size="' + esc(g.sizeKey) + '"><b>' + esc(g.sizeLabel) + '</b>' +
+      '<span class="muted">' + count + ' pcs</span>' +
+      '<span class="stock" title="' + (own ? 'Saved for this size' : 'Using the default') + '">Stock ' +
+      '<input data-stock="' + esc(g.sizeKey) + '" value="' + esc(stockFor(g.sizeLabel)) + '"> ft' + (own ? '' : ' <i>(default)</i>') + '</span></div>' +
+      '<table><tr><th class="c"></th><th>Part</th><th class="n">Length</th><th class="n">Qty</th></tr>' +
+      g.pieces.map(function (p) {
+        return '<tr><td class="c"><input type="checkbox"' + (p.include ? ' checked' : '') + ' data-piece="' + p.id + '" data-in="' + esc(g.sizeKey) + '"></td><td>' + esc(p.name) +
+          '</td><td class="n">' + fmtIn(p.length) + '</td><td class="n">' + p.qty + '</td></tr>';
+      }).join('') +
+      '</table>';
+  });
+  if (d.skipped.length) {
+    html += '<details><summary>' + d.skipped.length + ' other parts skipped (plate, hardware…)</summary><p class="muted">' +
+      d.skipped.map(function (s) { return esc(s.name) + ' ×' + s.qty; }).join(', ') + '</p></details>';
+  }
+  $('parts').innerHTML = html;
+  $('settings').hidden = !d.pieces.length;
+
+  // Size box ticks/unticks all its parts; part boxes set what gets calculated.
+  document.querySelectorAll('[data-size]').forEach(function (box) {
+    box.onchange = function () {
+      document.querySelectorAll('[data-in="' + box.getAttribute('data-size') + '"]').forEach(function (c) {
+        c.checked = box.checked; d.pieces[+c.getAttribute('data-piece')].include = box.checked;
+      });
+    };
+  });
+  document.querySelectorAll('[data-piece]').forEach(function (c) {
+    c.onchange = function () { d.pieces[+c.getAttribute('data-piece')].include = c.checked; };
+  });
+}
+
+function stockInput(sizeKey) {
+  var found = null;
+  document.querySelectorAll('[data-stock]').forEach(function (i) { if (i.getAttribute('data-stock') === sizeKey) found = i; });
+  return found;
+}
+
+function calculate() {
+  var kerf = parseFloat($('kerf').value) || 0;
+  var step = $('round').value, problems = [], changed = {};
+
+  var groups = sizeGroups(true).map(function (g) {
+    var text = stockInput(g.sizeKey).value;
+    var stockFt = parseFt(text);
+    if (!stockFt.length) { problems.push(g.sizeLabel + ': enter stock lengths'); return null; }
+    if (!sameFt(text, stockFor(g.sizeLabel))) changed[g.sizeLabel] = text;
+    var longest = Math.max.apply(null, stockFt) * 12, byLen = {};
+    g.pieces.forEach(function (t) {
+      var len = roundUp(t.length, step);
+      if (len > longest) problems.push(t.name + ' (' + fmtIn(len) + ') is longer than ' + g.sizeLabel + ' stock');
+      var p = byLen[len] = byLen[len] || { length: len, count: 0, names: [] };
+      p.count += t.qty; p.names.push(t.name);
+    });
+    return { sizeLabel: g.sizeLabel, stockFt: stockFt, parts: Object.keys(byLen).map(function (k) {
+      var p = byLen[k]; return { length: p.length, count: p.count, label: p.names.join(', ').slice(0, 60) };
+    }) };
+  }).filter(Boolean);
+  if (problems.length) return setStatus(problems.join('; '), true);
+  if (!groups.length) return setStatus('Tick at least one part.', true);
+
+  var save = $('remember').checked && Object.keys(changed).length
+    ? call('rememberSizeStock', BOOT.key, changed).then(function (s) { state.stock = s; }) : null;
+
+  $('calc').disabled = true; setStatus('Working out the cuts…');
+  Promise.all([call('optimize', BOOT.key, groups, { kerf: kerf }), save]).then(function (res) {
+    state.results = res[0]; renderResults();
+    setStatus(save ? 'Saved stock lengths for ' + Object.keys(changed).join(', ') + '.' : '');
+    if (save) { $('remember').checked = false; renderParts(); }
+  }).catch(function (e) { setStatus(e.message, true); })
+    .then(function () { $('calc').disabled = false; });
+}
+
+function renderResults() {
+  var html = '<h2>Buy list' + (state.data.assemblyName ? ' – ' + esc(state.data.assemblyName) : '') + '</h2>';
+  state.results.forEach(function (r) {
+    html += '<div class="size"><b>' + esc(r.sizeLabel) + '</b></div>';
+    if (r.error) { html += '<p class="err">' + esc(r.error) + '</p>'; return; }
+    html += r.buy.map(function (b) { return '<div class="buy">' + b.count + ' × ' + b.lengthFt + "' sticks</div>"; }).join('');
+    var used = r.boughtIn ? Math.round(100 * r.partsIn / r.boughtIn) : 0;
+    html += '<div class="muted">' + used + '% of the steel goes into parts. ' +
+      (r.optimal ? 'This is the least steel possible.' : 'Very close to the least possible (too many cuts to prove it).') + '</div>';
+    html += '<details><summary>Cutting plan</summary><table><tr><th class="n">×</th><th>Stick</th><th>Cuts</th><th class="n">Drop</th></tr>' +
+      r.layouts.map(function (l) {
+        return '<tr><td class="n">' + l.count + '</td><td>' + l.stockFt + "'</td><td>" +
+          l.parts.map(function (p) { return p.count + ' × ' + fmtFtIn(p.length) + (p.label ? ' <span class="muted">' + esc(p.label) + '</span>' : ''); }).join('<br>') +
+          '</td><td class="n">' + fmtFtIn(l.drop) + '</td></tr>';
+      }).join('') + '</table></details>';
+  });
+  html += '<button class="secondary" id="csv">Download CSV</button>';
+  $('results').innerHTML = html;
+  $('csv').onclick = downloadCsv;
+}
+
+function downloadCsv() {
+  var q = function (s) { return '"' + String(s).replace(/"/g, '""') + '"'; };
+  var lines = [['Size', 'Stock (ft)', 'Sticks to buy'].map(q).join(',')];
+  state.results.forEach(function (r) { (r.buy || []).forEach(function (b) { lines.push([r.sizeLabel, b.lengthFt, b.count].map(q).join(',')); }); });
+  lines.push('', ['Size', 'Sticks', 'Stock (ft)', 'Cuts', 'Drop (in)'].map(q).join(','));
+  state.results.forEach(function (r) {
+    (r.layouts || []).forEach(function (l) {
+      var cuts = l.parts.map(function (p) { return p.count + ' x ' + p.length + '" ' + p.label; }).join('; ');
+      lines.push([r.sizeLabel, l.count, l.stockFt, cuts, l.drop].map(q).join(','));
+    });
+  });
+  lines.push('', ['Size', 'Part', 'Length (in)', 'Qty'].map(q).join(','));
+  sizeGroups(true).forEach(function (g) { g.pieces.forEach(function (t) { lines.push([g.sizeLabel, t.name, t.length, t.qty].map(q).join(',')); }); });
+  var a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([lines.join('\r\n')], { type: 'text/csv' }));
+  a.download = (state.data.assemblyName || 'cut-list') + ' - steel.csv';
+  a.click();
+}
+
+// ------------------------------------------------------------ stock settings page
+
+function showStock(on) {
+  $('mainView').hidden = on; $('stockView').hidden = !on;
+  $('toggleView').textContent = on ? 'Back to cut list' : 'Stock settings';
+  $('title').textContent = on ? 'Stock settings' : 'Steel Cut List';
+  setStatus('', false, $('stockStatus'));
+  if (on) {
+    // Edit a copy; sizes in the loaded assembly are listed too so they're easy to set.
+    state.edit = { defaultFt: state.stock.defaultFt, kerf: state.stock.kerf, sizes: Object.assign({}, state.stock.sizes) };
+    $('defFt').value = state.edit.defaultFt;
+    $('defKerf').value = state.edit.kerf;
+    renderSizeTable();
+  }
+}
+
+function assemblySizes() {
+  return state.data ? sizeGroups(false).map(function (g) { return g.sizeLabel; }) : [];
+}
+
+function renderSizeTable() {
+  var labels = Object.keys(state.edit.sizes);
+  assemblySizes().forEach(function (l) { if (labels.indexOf(l) < 0) labels.push(l); });
+  labels.sort(function (a, b) { return a.localeCompare(b, undefined, { numeric: true }); });
+  $('sizeTable').innerHTML = labels.length
+    ? '<tr><th>Size</th><th>Stock (ft)</th><th></th></tr>' + labels.map(function (l, i) {
+        return '<tr><td>' + esc(l) + '</td><td><input data-edit="' + i + '" value="' + esc(state.edit.sizes[l] || '') +
+          '" placeholder="default"></td><td class="n"><button class="link" data-del="' + i + '" title="Use the default">✕</button></td></tr>';
+      }).join('')
+    : '<tr><td class="muted">No sizes yet. Load an assembly to list its sizes, or add one below.</td></tr>';
+  document.querySelectorAll('[data-edit]').forEach(function (inp) {
+    inp.oninput = function () { state.edit.sizes[labels[+inp.getAttribute('data-edit')]] = inp.value; };
+  });
+  document.querySelectorAll('[data-del]').forEach(function (b) {
+    b.onclick = function () { delete state.edit.sizes[labels[+b.getAttribute('data-del')]]; renderSizeTable(); };
+  });
+  $('knownSizes').innerHTML = assemblySizes().map(function (l) { return '<option value="' + esc(l) + '">'; }).join('');
+}
+
+function addSize() {
+  var label = $('newSize').value.trim(), ft = $('newFt').value.trim();
+  if (!label || !parseFt(ft).length) return setStatus('Enter a size and its stock lengths.', true, $('stockStatus'));
+  state.edit.sizes[label] = ft;
+  $('newSize').value = ''; $('newFt').value = '';
+  setStatus('', false, $('stockStatus'));
+  renderSizeTable();
+}
+
+function saveStock() {
+  state.edit.defaultFt = $('defFt').value;
+  state.edit.kerf = $('defKerf').value;
+  $('saveStock').disabled = true; setStatus('Saving…', false, $('stockStatus'));
+  call('saveStockSettings', BOOT.key, state.edit).then(function (s) {
+    state.stock = s;
+    $('kerf').value = s.kerf;
+    if (state.data) renderParts();
+    showStock(false);
+    setStatus('Stock settings saved.');
+  }).catch(function (e) { setStatus(e.message, true, $('stockStatus')); })
+    .then(function () { $('saveStock').disabled = false; });
+}
+
+// ------------------------------------------------------------ start
+
+$('kerf').value = state.stock.kerf;
+$('load').onclick = loadParts;
+if (!BOOT.key) setStatus('Open this panel from Onshape (the link is missing its key).', true);
+call('getStockSettings', BOOT.key).then(function (s) {
+  state.stock = s;
+  $('kerf').value = s.kerf;
+  if (state.data) renderParts();
+}).catch(function (e) { setStatus(e.message, true); });
+$('reloadAsm').onclick = reloadAssemblies;
+$('calc').onclick = calculate;
+$('toggleView').onclick = function () { showStock($('stockView').hidden); };
+$('backMain').onclick = function () { showStock(false); };
+$('addSize').onclick = addSize;
+$('saveStock').onclick = saveStock;
+$('asm').onchange = function () { state.data = null; $('parts').innerHTML = ''; $('results').innerHTML = ''; $('settings').hidden = true; };
+
+if (BOOT.documentId && BOOT.wvmId) {
+  loadAssemblies({ documentId: BOOT.documentId, wvm: BOOT.wvm, wvmId: BOOT.wvmId, elementId: BOOT.elementId, configuration: BOOT.configuration });
+} else {
+  $('docPick').hidden = false;
+  $('asm').innerHTML = '<option value="">Paste a document link first</option>';
+  $('url').onchange = function () {
+    var doc = parseUrl($('url').value);
+    if (doc) { setStatus(''); loadAssemblies(doc); } else setStatus('That doesn\'t look like an Onshape document link.', true);
+  };
+}
+</script>
+</body>
+</html>
