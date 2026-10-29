@@ -35,6 +35,8 @@
   .buy { font-size:14px; font-weight:600; margin:4px 0; }
   .muted { color:var(--muted); } .err { color:var(--warn); } .note { font-size:12px; }
   details { margin-top:6px; } summary { cursor:pointer; color:var(--muted); }
+  .spaced { margin-top:6px; }
+  .current { font-weight:600; padding:6px 0; }
 </style>
 </head>
 <body>
@@ -45,15 +47,24 @@
 
 <!-- ============================================================ cut list -->
 <div id="mainView">
+  <!-- Outside Onshape: pick a document, then an assembly. -->
   <div id="docPick" hidden>
-    <label for="url">Onshape document link</label>
-    <input id="url" placeholder="https://cad.onshape.com/documents/…">
+    <label for="docSearch">Onshape document</label>
+    <input id="docSearch" placeholder="Search by title, or paste a document link">
+    <select id="doc" class="spaced"><option>Loading…</option></select>
+  </div>
+  <div id="asmPick" hidden>
+    <label for="asm">Assembly</label>
+    <div class="pick">
+      <select id="asm"><option value="">Choose a document first</option></select>
+      <button class="secondary" id="reloadAsm" title="Reload the assembly list">↻</button>
+    </div>
   </div>
 
-  <label for="asm">Assembly</label>
-  <div class="pick">
-    <select id="asm"><option>Loading…</option></select>
-    <button class="secondary" id="reloadAsm" title="Reload the assembly list">↻</button>
+  <!-- Inside Onshape: the open assembly. -->
+  <div id="asmCurrent" hidden>
+    <label>Assembly</label>
+    <div class="current" id="asmName">Loading…</div>
   </div>
   <button id="load">Load steel parts</button>
   <div id="status" class="muted"></div>
@@ -121,7 +132,7 @@ var BOOT = (function () {
   };
 })();
 var $ = function (id) { return document.getElementById(id); };
-var state = { ref: null, data: null, results: null, stock: { defaultFt: '20, 24', kerf: '0.125', sizes: {} }, edit: null };
+var state = { ref: null, inOnshape: false, docs: [], data: null, results: null, stock: { defaultFt: '20, 24', kerf: '0.125', sizes: {} }, edit: null };
 
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
 function fmtIn(x) { return (+x.toFixed(3)) + '"'; }
@@ -166,7 +177,69 @@ function parseUrl(u) {
 
 // ------------------------------------------------------------ cut list
 
-/** Fill the assembly picker; selects `pick` if given, else the assembly Onshape opened us in. */
+function clearParts() {
+  state.data = null;
+  $('parts').innerHTML = ''; $('results').innerHTML = ''; $('settings').hidden = true;
+}
+
+/** Inside Onshape: use the assembly the panel was opened in and just show its name. */
+function useCurrentAssembly(doc) {
+  state.ref = doc; state.inOnshape = true;
+  $('asmCurrent').hidden = false;
+  $('load').disabled = true;
+  call('listAssemblies', BOOT.key, doc.documentId, doc.wvm, doc.wvmId).then(function (list) {
+    var a = list.filter(function (x) { return x.id === doc.elementId; })[0];
+    $('asmName').textContent = a ? a.name : 'This tab isn\'t an assembly.';
+    $('load').disabled = !a;
+  }).catch(function (e) { $('asmName').textContent = ''; setStatus(e.message, true); });
+}
+
+/** Outside Onshape: fill the document picker, newest first, optionally filtered by title. */
+function loadDocuments(search) {
+  var req = state.docReq = (state.docReq || 0) + 1;
+  $('doc').innerHTML = '<option value="">Loading…</option>';
+  call('listDocuments', BOOT.key, search || '').then(function (docs) {
+    if (req !== state.docReq) return; // a newer search has started
+    state.docs = docs;
+    var current = state.ref ? state.ref.documentId : '';
+    $('doc').innerHTML = (docs.length
+      ? '<option value="">Choose a document (' + docs.length + (search ? ' matching' : ' most recent') + ')</option>'
+      : '<option value="">No documents found</option>') +
+      docs.map(function (d, i) {
+        return '<option value="' + i + '"' + (d.id === current ? ' selected' : '') + '>' + esc(d.name) + '</option>';
+      }).join('');
+    // The open document dropped out of the results: clear what was loaded from it.
+    if (current && !docs.some(function (d) { return d.id === current; })) {
+      state.ref = null; clearParts(); $('asmPick').hidden = true;
+    }
+  }).catch(function (e) { if (req === state.docReq) { $('doc').innerHTML = '<option value="">Couldn\'t load documents</option>'; setStatus(e.message, true); } });
+}
+
+function chooseDocument() {
+  clearParts(); setStatus('');
+  var d = state.docs[$('doc').value];
+  if (!d) { state.ref = null; $('asmPick').hidden = true; return; }
+  $('asmPick').hidden = false;
+  loadAssemblies({ documentId: d.id, wvm: 'w', wvmId: d.wvmId, elementId: '' });
+}
+
+/** The search box takes a title to search for, or a pasted document link. */
+function searchDocuments() {
+  clearTimeout(state.searchTimer);
+  state.searchTimer = setTimeout(function () {
+    var text = $('docSearch').value.trim(), link = parseUrl(text);
+    if (link) {
+      state.docs = [{ id: link.documentId, name: 'Pasted link', wvmId: link.wvmId, wvm: link.wvm }];
+      $('doc').innerHTML = '<option value="0">Pasted link</option>';
+      clearParts(); $('asmPick').hidden = false;
+      loadAssemblies({ documentId: link.documentId, wvm: link.wvm, wvmId: link.wvmId, elementId: link.elementId });
+    } else {
+      loadDocuments(text);
+    }
+  }, 400);
+}
+
+/** Fill the assembly picker; selects `pick` if given, else the document's assembly from a pasted link. */
 function loadAssemblies(doc, pick) {
   state.ref = doc;
   $('asm').innerHTML = '<option>Loading…</option>';
@@ -181,16 +254,17 @@ function loadAssemblies(doc, pick) {
 }
 
 function reloadAssemblies() {
-  if (!state.ref) return setStatus('Paste a document link first.', true);
+  if (!state.ref) return setStatus('Choose a document first.', true);
   var current = $('asm').value;
   setStatus('');
   loadAssemblies(state.ref, current).then(function () {
-    if ($('asm').value !== current) $('asm').onchange(); // the selected assembly is gone; clear its parts
+    if ($('asm').value !== current) clearParts(); // the selected assembly is gone
   });
 }
 
 function loadParts() {
-  var ref = Object.assign({}, state.ref, { elementId: $('asm').value });
+  if (!state.ref) return setStatus('Choose a document first.', true);
+  var ref = Object.assign({}, state.ref, { elementId: state.inOnshape ? state.ref.elementId : $('asm').value });
   if (ref.elementId !== state.ref.elementId) ref.configuration = '';
   if (!ref.elementId) return;
   $('load').disabled = true; $('results').innerHTML = ''; $('parts').innerHTML = '';
@@ -412,17 +486,15 @@ $('toggleView').onclick = function () { showStock($('stockView').hidden); };
 $('backMain').onclick = function () { showStock(false); };
 $('addSize').onclick = addSize;
 $('saveStock').onclick = saveStock;
-$('asm').onchange = function () { state.data = null; $('parts').innerHTML = ''; $('results').innerHTML = ''; $('settings').hidden = true; };
+$('asm').onchange = clearParts;
+$('doc').onchange = chooseDocument;
+$('docSearch').oninput = searchDocuments;
 
-if (BOOT.documentId && BOOT.wvmId) {
-  loadAssemblies({ documentId: BOOT.documentId, wvm: BOOT.wvm, wvmId: BOOT.wvmId, elementId: BOOT.elementId, configuration: BOOT.configuration });
+if (BOOT.documentId && BOOT.wvmId && BOOT.elementId) {
+  useCurrentAssembly({ documentId: BOOT.documentId, wvm: BOOT.wvm, wvmId: BOOT.wvmId, elementId: BOOT.elementId, configuration: BOOT.configuration });
 } else {
   $('docPick').hidden = false;
-  $('asm').innerHTML = '<option value="">Paste a document link first</option>';
-  $('url').onchange = function () {
-    var doc = parseUrl($('url').value);
-    if (doc) { setStatus(''); loadAssemblies(doc); } else setStatus('That doesn\'t look like an Onshape document link.', true);
-  };
+  if (BOOT.key) loadDocuments('');
 }
 </script>
 </body>
