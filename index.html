@@ -380,7 +380,7 @@ function renderResults() {
     html += '<details><summary>Cutting plan</summary><table><tr><th class="n">×</th><th>Stick</th><th>Cuts</th><th class="n">Drop</th></tr>' +
       r.layouts.map(function (l) {
         return '<tr><td class="n">' + l.count + '</td><td>' + l.stockFt + "'</td><td>" +
-          l.parts.map(function (p) { return p.count + ' × ' + fmtFtIn(p.length) + (p.label ? ' <span class="muted">' + esc(p.label) + '</span>' : ''); }).join('<br>') +
+          l.parts.map(function (p) { return p.count + ' × ' + fmtIn(p.length) + (p.label ? ' <span class="muted">' + esc(p.label) + '</span>' : ''); }).join('<br>') +
           '</td><td class="n">' + fmtFtIn(l.drop) + '</td></tr>';
       }).join('') + '</table></details>';
   });
