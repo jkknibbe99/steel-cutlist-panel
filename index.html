@@ -182,16 +182,14 @@ function clearParts() {
   $('parts').innerHTML = ''; $('results').innerHTML = ''; $('settings').hidden = true;
 }
 
-/** Inside Onshape: use the assembly the panel was opened in and just show its name. */
+/**
+ * Inside Onshape: use the assembly the panel was opened in. Its name arrives
+ * with the parts, so opening the panel costs no Onshape API call.
+ */
 function useCurrentAssembly(doc) {
   state.ref = doc; state.inOnshape = true;
   $('asmCurrent').hidden = false;
-  $('load').disabled = true;
-  call('listAssemblies', BOOT.key, doc.documentId, doc.wvm, doc.wvmId).then(function (list) {
-    var a = list.filter(function (x) { return x.id === doc.elementId; })[0];
-    $('asmName').textContent = a ? a.name : 'This tab isn\'t an assembly.';
-    $('load').disabled = !a;
-  }).catch(function (e) { $('asmName').textContent = ''; setStatus(e.message, true); });
+  $('asmName').textContent = 'This assembly';
 }
 
 /** Outside Onshape: fill the document picker, newest first, optionally filtered by title. */
@@ -203,7 +201,7 @@ function loadDocuments(search) {
     state.docs = docs;
     var current = state.ref ? state.ref.documentId : '';
     $('doc').innerHTML = (docs.length
-      ? '<option value="">Choose a document (' + docs.length + (search ? ' matching' : ' most recent') + ')</option>'
+      ? '<option value="">Choose a document (' + docs.length + (search ? ' matching' : ' most recent; search for older') + ')</option>'
       : '<option value="">No documents found</option>') +
       docs.map(function (d, i) {
         return '<option value="' + i + '"' + (d.id === current ? ' selected' : '') + '>' + esc(d.name) + '</option>';
@@ -271,6 +269,7 @@ function loadParts() {
   setStatus('Reading BOM and measuring parts…');
   call('getCutList', BOOT.key, ref).then(function (data) {
     data.pieces.forEach(function (p, i) { p.id = i; p.include = true; });
+    if (state.inOnshape && data.assemblyName) $('asmName').textContent = data.assemblyName;
     state.data = data; renderParts(); setStatus('');
   }).catch(function (e) { setStatus(e.message, true); })
     .then(function () { $('load').disabled = false; });
