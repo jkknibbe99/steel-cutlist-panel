@@ -360,7 +360,7 @@ function calculate() {
 
   $('calc').disabled = true; setStatus('Working out the cuts…');
   Promise.all([call('optimize', BOOT.key, groups, { kerf: kerf }), save]).then(function (res) {
-    state.results = res[0]; renderResults();
+    state.results = res[0]; state.calcKerf = kerf; renderResults();
     setStatus(save ? 'Saved stock lengths for ' + Object.keys(changed).join(', ') + '.' : '');
     if (save) { $('remember').checked = false; renderParts(); }
   }).catch(function (e) { setStatus(e.message, true); })
@@ -383,9 +383,10 @@ function renderResults() {
           '</td><td class="n">' + fmtFtIn(l.drop) + '</td></tr>';
       }).join('') + '</table></details>';
   });
-  html += '<button class="secondary" id="csv">Download CSV</button>';
+  html += '<button class="secondary" id="pdf">Download PDF</button> <button class="secondary" id="csv">Download CSV</button>';
   $('results').innerHTML = html;
   $('csv').onclick = downloadCsv;
+  $('pdf').onclick = downloadPdf;
 }
 
 function downloadCsv() {
@@ -405,6 +406,114 @@ function downloadCsv() {
   a.href = URL.createObjectURL(new Blob([lines.join('\r\n')], { type: 'text/csv' }));
   a.download = (state.data.assemblyName || 'cut-list') + ' - steel.csv';
   a.click();
+}
+
+// ------------------------------------------------------------ PDF cutting plan
+
+var JSPDF_URL = 'https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js';
+
+/** jsPDF is only needed for this button, so it's loaded on first use. */
+function loadJsPdf() {
+  if (window.jspdf) return Promise.resolve(window.jspdf.jsPDF);
+  return new Promise(function (resolve, reject) {
+    var s = document.createElement('script');
+    s.src = JSPDF_URL;
+    s.onload = function () { resolve(window.jspdf.jsPDF); };
+    s.onerror = function () { reject(new Error('Couldn\'t load the PDF tool. Check your connection and try again.')); };
+    document.head.appendChild(s);
+  });
+}
+
+function downloadPdf() {
+  $('pdf').disabled = true;
+  loadJsPdf().then(function (JsPdf) {
+    buildPdf(JsPdf).save((state.data.assemblyName || 'cut-list') + ' - cutting plan.pdf');
+  }).catch(function (e) { setStatus(e.message, true); })
+    .then(function () { $('pdf').disabled = false; });
+}
+
+/**
+ * Letter-size cutting plan: for each material, what to buy, then every stick
+ * layout drawn to scale with its cuts, part names and drop.
+ */
+function buildPdf(JsPdf) {
+  var doc = new JsPdf({ unit: 'pt', format: 'letter' });
+  var W = 612, H = 792, M = 40, y = M, barW = W - 2 * M, kerf = state.calcKerf || 0;
+  var inch = function (x) { return (+x.toFixed(3)) + '"'; };
+  var room = function (h) { if (y + h > H - M) { doc.addPage(); y = M; } };
+  var text = function (s, x, size, style, color) {
+    doc.setFont('helvetica', style || 'normal'); doc.setFontSize(size); doc.setTextColor(color || '#1d2329');
+    doc.text(String(s), x, y);
+  };
+
+  y += 6;
+  text('Cutting plan' + (state.data.assemblyName ? ' - ' + state.data.assemblyName : ''), M, 16, 'bold');
+  y += 16;
+  text(new Date().toLocaleDateString() + '   |   Kerf ' + inch(kerf) + '   |   Lengths in inches', M, 9, 'normal', '#66707a');
+  y += 22;
+
+  state.results.forEach(function (r) {
+    room(70);
+    doc.setFillColor('#f4f6f8'); doc.rect(M, y - 13, barW, 20, 'F');
+    text(r.sizeLabel, M + 6, 12, 'bold');
+    if (r.error) { y += 20; text(r.error, M, 9, 'normal', '#b3261e'); y += 20; return; }
+    var buy = 'Buy ' + r.buy.map(function (b) { return b.count + ' x ' + b.lengthFt + "'"; }).join(' + ');
+    doc.setFont('helvetica', 'bold'); doc.setFontSize(11);
+    doc.text(buy, W - M - 6, y, { align: 'right' });
+    y += 22;
+
+    // One scale per material, so a 20' stick draws shorter than a 24' one.
+    var longestFt = Math.max.apply(null, r.layouts.map(function (l) { return l.stockFt; }));
+    var scale = barW / (longestFt * 12);
+
+    r.layouts.forEach(function (l) {
+      var pieces = [];
+      l.parts.forEach(function (p) { for (var i = 0; i < p.count; i++) pieces.push(p.length); });
+      room(36 + 12 * l.parts.length + 14);
+
+      text(l.count + ' stick' + (l.count === 1 ? '' : 's') + ' of ' + l.stockFt + "'  -  drop " + inch(l.drop) +
+        (l.count === 1 ? '' : ' each'), M, 10, 'bold');
+      y += 8;
+
+      // The stick to scale: pieces in cut order, then the drop.
+      var stickEnd = M + l.stockFt * 12 * scale, x = M, barH = 20;
+      doc.setLineWidth(0.6); doc.setDrawColor('#2e5a88');
+      pieces.forEach(function (len) {
+        var w = len * scale;
+        doc.setFillColor('#dce8f5'); doc.rect(x, y, w, barH, 'FD');
+        if (w > 30) {
+          doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor('#1d2329');
+          doc.text(inch(len), x + w / 2, y + 13, { align: 'center' });
+        }
+        x += w + kerf * scale;
+      });
+      var dropW = stickEnd - x;
+      if (dropW > 0.5) {
+        doc.setFillColor('#eeeeee'); doc.setDrawColor('#bbbbbb'); doc.rect(x, y, dropW, barH, 'FD');
+        if (dropW > 30) {
+          doc.setFontSize(8); doc.setTextColor('#66707a');
+          doc.text('drop', x + dropW / 2, y + 13, { align: 'center' });
+        }
+      }
+      y += barH + 14;
+
+      l.parts.forEach(function (p) {
+        text(p.count + ' x ' + inch(p.length), M + 8, 9, 'bold');
+        if (p.label) text(doc.splitTextToSize(p.label, barW - 90)[0], M + 80, 9, 'normal', '#66707a');
+        y += 12;
+      });
+      y += 10;
+    });
+    y += 8;
+  });
+
+  // Page numbers.
+  var pages = doc.getNumberOfPages();
+  for (var i = 1; i <= pages; i++) {
+    doc.setPage(i); doc.setFont('helvetica', 'normal'); doc.setFontSize(8); doc.setTextColor('#66707a');
+    doc.text('Page ' + i + ' of ' + pages, W - M, H - 20, { align: 'right' });
+  }
+  return doc;
 }
 
 // ------------------------------------------------------------ stock settings page
