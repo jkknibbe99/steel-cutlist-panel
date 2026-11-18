@@ -135,11 +135,11 @@ var $ = function (id) { return document.getElementById(id); };
 var state = { ref: null, inOnshape: false, docs: [], data: null, results: null, stock: { defaultFt: '20, 24', kerf: '0.125', sizes: {} }, edit: null };
 
 function esc(s) { return String(s).replace(/[&<>"]/g, function (c) { return { '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[c]; }); }
-function fmtIn(x) { return (+x.toFixed(3)) + '"'; }
+function fmtIn(x) { return (+x.toFixed(2)) + '"'; }
 function fmtFtIn(inches) {
   if (inches < 12) return fmtIn(inches);
   var ft = Math.floor(inches / 12), r = inches - ft * 12;
-  return ft + "' " + (+r.toFixed(3)) + '"';
+  return ft + "' " + (+r.toFixed(2)) + '"';
 }
 function roundUp(x, step) { step = +step; return step ? Math.ceil(x * step - 1e-6) / step : +x.toFixed(4); }
 function parseFt(s) { return String(s).split(',').map(function (x) { return parseFloat(x); }).filter(function (x) { return x > 0; }); }
@@ -439,7 +439,7 @@ function downloadPdf() {
 function buildPdf(JsPdf) {
   var doc = new JsPdf({ unit: 'pt', format: 'letter' });
   var W = 612, H = 792, M = 40, y = M, barW = W - 2 * M, kerf = state.calcKerf || 0;
-  var inch = function (x) { return (+x.toFixed(3)) + '"'; };
+  var inch = function (x) { return (+x.toFixed(2)) + '"'; };
   var room = function (h) { if (y + h > H - M) { doc.addPage(); y = M; } };
   var text = function (s, x, size, style, color) {
     doc.setFont('helvetica', style || 'normal'); doc.setFontSize(size); doc.setTextColor(color || '#1d2329');
